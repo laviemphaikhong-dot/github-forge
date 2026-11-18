@@ -225,17 +225,14 @@ function sidebandPack(pack: Buffer): Buffer[] {
 
 function fetchPack(repo: Repo, args: FetchArgs): { pack: Buffer; shallow: string[] } {
   const cacheKey = JSON.stringify([args.wants, args.haves, args.depth, args.shallowIn]);
-  const boundary = new Set(args.shallowIn);
   const cached = repo.packCache.get(cacheKey);
-  if (cached) {
-    const shallow = collectForFetch(repo, args.wants, args.haves, args.depth, boundary).shallow;
-    return { pack: cached, shallow };
-  }
-  const { objects, shallow } = collectForFetch(repo, args.wants, args.haves, args.depth, boundary);
+  if (cached) return cached;
+  const { objects, shallow } = collectForFetch(repo, args.wants, args.haves, args.depth, new Set(args.shallowIn));
   const pack = writePack(repo, objects);
+  const entry = { pack, shallow };
   if (repo.packCache.size > 64) repo.packCache.clear();
-  repo.packCache.set(cacheKey, pack);
-  return { pack, shallow };
+  repo.packCache.set(cacheKey, entry);
+  return entry;
 }
 
 function handleFetchV2(repo: Repo, args: FetchArgs, res: ServerResponse): void {

@@ -51,6 +51,22 @@ export function parseCommit(data: Buffer): CommitView {
   return { tree, parents, message, time };
 }
 
+/**
+ * Header-only commit parse for the hot paths (fetch/push): tree and parents,
+ * without slicing out the message or running the timestamp regex.
+ */
+export function parseCommitHead(data: Buffer): { tree: string; parents: string[] } {
+  const end = data.indexOf('\n\n');
+  const head = data.toString('utf8', 0, end === -1 ? data.length : end);
+  let tree = '';
+  const parents: string[] = [];
+  for (const line of head.split('\n')) {
+    if (line.startsWith('tree ')) tree = line.slice(5).trim();
+    else if (line.startsWith('parent ')) parents.push(line.slice(7).trim());
+  }
+  return { tree, parents };
+}
+
 export interface TreeEntry {
   mode: string;
   name: string;
@@ -153,7 +169,7 @@ export function isAncestor(repo: Repo, ancestor: string, descendant: string): bo
     if (seen.has(sha)) continue;
     seen.add(sha);
     const obj = repo.objects.get(sha);
-    if (obj && obj.type === 'commit') queue.push(...parseCommit(obj.data).parents);
+    if (obj && obj.type === 'commit') queue.push(...parseCommitHead(obj.data).parents);
   }
   return false;
 }
@@ -177,7 +193,7 @@ export function collectForFetch(
     if (!obj) return;
     haveSet.add(sha);
     if (obj.type === 'commit') {
-      const commit = parseCommit(obj.data);
+      const commit = parseCommitHead(obj.data);
       markHave(commit.tree);
       // A commit on the client's shallow boundary is had, but its parents
       // are not: the client's clone was cut there.
@@ -226,14 +242,14 @@ export function collectForFetch(
           const target = /^object ([0-9a-f]{40})/m.exec(o.data.toString('utf8'));
           if (target) stack.push(target[1]);
         } else if (o.type === 'commit') {
-          const commit = parseCommit(o.data);
+          const commit = parseCommitHead(o.data);
           stack.push(commit.tree, ...commit.parents);
         }
       }
     }
   }
   const includeTreeOf = (commitSha: string): void => {
-    const commit = parseCommit(repo.objects.get(commitSha)!.data);
+    const commit = parseCommitHead(repo.objects.get(commitSha)!.data);
     const stack = [commit.tree];
     while (stack.length) {
       const sha = stack.pop()!;
@@ -250,7 +266,7 @@ export function collectForFetch(
       // from it, because depth counts from the want.
       include(sha);
       includeTreeOf(sha);
-      const commit = parseCommit(repo.objects.get(sha)!.data);
+      const commit = parseCommitHead(repo.objects.get(sha)!.data);
       const d = commitDepth.get(sha)!;
       if (depth !== null && d >= depth - 1) {
         if (commit.parents.length > 0 && depth !== null) shallow.push(sha);

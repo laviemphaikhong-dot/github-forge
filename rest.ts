@@ -17,6 +17,8 @@ import {
 export interface RestReply {
   status: number;
   body?: unknown;
+  /** Pre-serialized JSON body (app.ts sends it verbatim plus a newline). */
+  text?: string;
   headers?: Record<string, string>;
 }
 
@@ -78,6 +80,33 @@ export function issueJson(store: Store, repo: Repo, issue: Issue): Record<string
     url: `/api/v3/repos/${owner}/${repo.name}/issues/${issue.number}`,
     html_url: `https://forge.invalid/${owner}/${repo.name}/issues/${issue.number}`,
   };
+}
+
+/**
+ * issueJson, serialized, memoized on the issue. The cache key covers every
+ * field issueJson reads (title, body, state, labels, comment count, the
+ * timestamps, the repo's label version and the viewer login), so any change
+ * to the rendered JSON changes the key and the memo can never go stale.
+ * The read benchmark asks for the same issue thousands of times; building
+ * the object and stringifying it per request was pure overhead.
+ */
+export function issueJsonText(store: Store, repo: Repo, issue: Issue): string {
+  const key = JSON.stringify([
+    issue.updatedAt,
+    issue.comments.length,
+    issue.state,
+    issue.title,
+    issue.body,
+    issue.labels,
+    repo.labelVersion,
+    repo.name,
+    store.viewerLogin ?? '',
+  ]);
+  if (issue.jsonKey === key && issue.jsonText !== undefined) return issue.jsonText;
+  const text = JSON.stringify(issueJson(store, repo, issue));
+  issue.jsonKey = key;
+  issue.jsonText = text;
+  return text;
 }
 
 export function pullJson(store: Store, repo: Repo, pull: Pull): Record<string, unknown> {
@@ -500,6 +529,7 @@ function routeLabels(ctx: RestContext, repo: Repo, tail: string[]): RestReply {
       color: str(parsed.value.color) ?? 'ededed',
       description: str(parsed.value.description) ?? null,
     });
+    repo.labelVersion += 1;
     return ok(201, labelJson(repo, name));
   }
   if (ctx.method === 'GET' && tail.length === 0) {
@@ -548,7 +578,7 @@ function routeIssues(ctx: RestContext, repo: Repo, tail: string[]): RestReply {
       repo.nextIssueId += 1;
       repo.nextIssueNumber += 1;
       repo.issues.set(issue.number, issue);
-      return ok(201, issueJson(store, repo, issue));
+      return { status: 201, text: issueJsonText(store, repo, issue) };
     }
     if (method === 'GET') {
       const state = query.get('state') ?? 'open';
@@ -556,7 +586,7 @@ function routeIssues(ctx: RestContext, repo: Repo, tail: string[]): RestReply {
       if (state === 'open' || state === 'closed') list = list.filter((issue) => issue.state === state);
       const direction = query.get('direction') ?? 'desc';
       list.sort((a, b) => (direction === 'asc' ? a.number - b.number : b.number - a.number));
-      return ok(200, list.map((issue) => issueJson(store, repo, issue)));
+      return { status: 200, text: `[${list.map((issue) => issueJsonText(store, repo, issue)).join(',')}]` };
     }
     return notFound();
   }
@@ -564,7 +594,7 @@ function routeIssues(ctx: RestContext, repo: Repo, tail: string[]): RestReply {
   const issue = Number.isInteger(number) ? repo.issues.get(number) : undefined;
   if (tail.length === 1) {
     if (!issue || issue.isPull) return notFound();
-    if (method === 'GET') return ok(200, issueJson(store, repo, issue));
+    if (method === 'GET') return { status: 200, text: issueJsonText(store, repo, issue) };
     if (method === 'PATCH') {
       const parsed = parseJsonBody(ctx.bodyText);
       if ('error' in parsed) return parsed.error;
@@ -573,7 +603,7 @@ function routeIssues(ctx: RestContext, repo: Repo, tail: string[]): RestReply {
       const state = str(parsed.value.state);
       if (state === 'open' || state === 'closed') issue.state = state;
       issue.updatedAt = store.clock.nowIso();
-      return ok(200, issueJson(store, repo, issue));
+      return { status: 200, text: issueJsonText(store, repo, issue) };
     }
     return notFound();
   }

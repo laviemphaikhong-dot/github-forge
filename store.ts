@@ -27,6 +27,9 @@ export interface Issue {
   comments: IssueComment[];
   /** Pull requests share the issue number space, as on GitHub. */
   isPull: boolean;
+  /** Memoized REST serialization of this issue (rest.ts issueJsonText). */
+  jsonKey?: string;
+  jsonText?: string;
 }
 
 export interface IssueComment {
@@ -70,10 +73,12 @@ export class Repo {
   pulls = new Map<number, Pull>();
   nextIssueNumber = 1;
   nextIssueId = 1;
-  /** Cache of generated packs, keyed by want+depth, for the clone workload. */
-  packCache = new Map<string, Buffer>();
+  /** Cache of generated packs (bytes + shallow list), keyed by want+depth. */
+  packCache = new Map<string, { pack: Buffer; shallow: string[] }>();
   /** Bumped on every ref change; keys the advertisement/ls-refs caches. */
   version = 0;
+  /** Bumped when a label is created; part of the issue-JSON cache key. */
+  labelVersion = 0;
   /** Rendered ls-refs replies, keyed by version + arguments. */
   lsRefsCache = new Map<string, Buffer>();
 

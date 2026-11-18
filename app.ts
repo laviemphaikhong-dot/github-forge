@@ -29,11 +29,43 @@ function sendJson(store: Store, res: ServerResponse, status: number, body: unkno
 }
 
 function decode(segment: string): string {
+  if (!segment.includes('%')) return segment;
   try {
     return decodeURIComponent(segment);
   } catch {
     return segment;
   }
+}
+
+/** One query parameter from a raw query string, without a URL object. */
+function queryParam(queryString: string, name: string): string | null {
+  for (const pair of queryString.split('&')) {
+    const eq = pair.indexOf('=');
+    const key = eq === -1 ? pair : pair.slice(0, eq);
+    if (key === name) return eq === -1 ? '' : decode(pair.slice(eq + 1).replace(/\+/g, ' '));
+  }
+  return null;
+}
+
+/** Send a REST reply: a pre-serialized `text` body goes out verbatim. */
+function sendRest(store: Store, res: ServerResponse, reply: RestReply): void {
+  if (reply.status === 204) {
+    res.writeHead(204, { 'x-github-request-id': store.nextRequestId() });
+    res.end();
+    return;
+  }
+  if (reply.text !== undefined) {
+    const text = `${reply.text}\n`;
+    res.writeHead(reply.status, {
+      'content-type': JSON_TYPE,
+      'content-length': Buffer.byteLength(text),
+      'x-github-request-id': store.nextRequestId(),
+      ...reply.headers,
+    });
+    res.end(text);
+    return;
+  }
+  sendJson(store, res, reply.status, reply.body, reply.headers);
 }
 
 /** Build the server. It binds nothing until the caller listens. */
@@ -43,8 +75,13 @@ export function createApp(): Server {
 
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
-      const url = new URL(req.url ?? '/', 'http://entry');
-      const path = url.pathname;
+      // Split the request target by hand: new URL() per request was visible
+      // in profiles, and the router only needs the path plus, on two
+      // branches, the query string.
+      const rawUrl = req.url ?? '/';
+      const q = rawUrl.indexOf('?');
+      const path = q === -1 ? rawUrl : rawUrl.slice(0, q);
+      const queryString = q === -1 ? '' : rawUrl.slice(q + 1);
       const method = req.method ?? 'GET';
 
       // The env's boot check calls this twice: 200 {"ok":true}. No auth.
@@ -69,7 +106,7 @@ export function createApp(): Server {
           return;
         }
         if (method === 'GET' && rest === '/info/refs') {
-          handleInfoRefs(store, req, res, owner, repoName, url.searchParams.get('service') ?? '');
+          handleInfoRefs(store, req, res, owner, repoName, queryParam(queryString, 'service') ?? '');
           return;
         }
         if (method === 'POST' && rest === '/git-upload-pack') {
@@ -146,16 +183,11 @@ export function createApp(): Server {
           store,
           method,
           segments,
-          query: url.searchParams,
+          query: new URLSearchParams(queryString),
           bodyText,
           host: req.headers.host ?? 'localhost',
         });
-        if (reply.status === 204) {
-          res.writeHead(204, { 'x-github-request-id': store.nextRequestId() });
-          res.end();
-          return;
-        }
-        sendJson(store, res, reply.status, reply.body, reply.headers);
+        sendRest(store, res, reply);
         return;
       }
 
